@@ -123,7 +123,7 @@ const deleteChat = async(req, res)=>{
 const updateChat = async(req, res)=>{
     try {
 
-        Chat.findByIdAndUpdate({ _id:req.body.id }, {
+        await Chat.findByIdAndUpdate({ _id:req.body.id }, {
             $set:{
                 message:req.body.message
             }

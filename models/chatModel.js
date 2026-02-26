@@ -1,5 +1,4 @@
 const mongoose = require('mongoose');
-const { required } = require('nodemon/lib/config');
 
 const chatSchema = new mongoose.Schema({
 
@@ -19,5 +18,8 @@ const chatSchema = new mongoose.Schema({
 },
 { timestamps:true}
 );
+
+chatSchema.index({ sender_id: 1, receiver_id: 1, createdAt: -1 });
+chatSchema.index({ receiver_id: 1, sender_id: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Chat', chatSchema );

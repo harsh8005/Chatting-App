@@ -91,6 +91,15 @@
                         </div>
                     </div>
 
+                    <div class="ai-toolbar mb-2">
+                        <button type="button" class="btn btn-sm btn-outline-info" id="ai-summary-btn">AI Summary</button>
+                        <button type="button" class="btn btn-sm btn-outline-info" id="ai-recap-btn">Meeting Recap</button>
+                        <button type="button" class="btn btn-sm btn-outline-info" id="ai-topics-btn">Refresh Topics</button>
+                        <span class="ml-2 small text-muted">Tip: mention <b>@aibot</b> in chat to get bot replies.</span>
+                    </div>
+                    <div id="ai-output" class="ai-output d-none"></div>
+                    <div id="ai-topics" class="ai-topics mb-2"></div>
+
                     <div class="members-wrap mb-2">
                         <div class="d-flex justify-content-between align-items-center">
                             <strong>Members</strong>
@@ -110,6 +119,7 @@
                         <input type="hidden" id="selected-group-id" name="group_id">
                         <input type="hidden" id="reply-to-id" name="reply_to">
                         <textarea name="message" placeholder="Write a message..." id="group-message" class="form-control" rows="2"></textarea>
+                        <div id="mention-suggestions" class="mention-suggestions d-none"></div>
                         <div class="d-flex align-items-center mt-2">
                             <input type="file" name="attachment" id="group-attachment" class="form-control-file mr-2">
                             <button type="submit" class="btn btn-primary btn-pill">Send</button>

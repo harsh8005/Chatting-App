@@ -79,6 +79,26 @@ const groupChatSchema = new mongoose.Schema(
         pinned_at: {
             type: Date,
             default: null
+        },
+        moderation: {
+            type: mongoose.Schema.Types.Mixed,
+            default: {}
+        },
+        transcript: {
+            type: String,
+            default: ''
+        },
+        sentiment: {
+            type: String,
+            default: ''
+        },
+        sentiment_score: {
+            type: Number,
+            default: 0
+        },
+        ai_generated: {
+            type: Boolean,
+            default: false
         }
     },
     { timestamps: true }

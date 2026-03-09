@@ -19,6 +19,9 @@ public/uploads/
 public/images/uploads/
 tmp/
 temp/
+*.pid
+*.seed
+*.pid.lock
 
 # test output
 coverage/
@@ -27,9 +30,17 @@ coverage/
 # cache
 .cache/
 *.tsbuildinfo
+.eslintcache
+.parcel-cache/
+npm-cache/
 
 # OS / editor
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+
+# build / misc
+dist/
+build/
+out/

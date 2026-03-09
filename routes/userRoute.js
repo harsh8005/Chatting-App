@@ -134,7 +134,11 @@ user_route.post('/delete-group-chat', auth.isLogin, messageLimiter, validateObje
 user_route.post('/update-group-chat', auth.isLogin, messageLimiter, validateObjectIds(['id']), userController.updateGroupChat);
 user_route.post('/toggle-pin-group-chat', auth.isLogin, messageLimiter, validateObjectIds(['id']), userController.togglePinGroupChat);
 user_route.post('/react-group-chat', auth.isLogin, messageLimiter, validateObjectIds(['id']), userController.reactGroupChat);
-user_route.post('/mark-group-read', auth.isLogin, messageLimiter, validateObjectIds(['group_id']), userController.markGroupRead);
+user_route.post('/mark-group-read', auth.isLogin, messageLimiter, userController.markGroupRead);
+user_route.get('/group-ai-summary/:groupId', auth.isLogin, validateObjectIds(['groupId']), userController.getGroupAiSummary);
+user_route.get('/group-ai-recap/:groupId', auth.isLogin, validateObjectIds(['groupId']), userController.getGroupAiRecap);
+user_route.get('/group-ai-topics/:groupId', auth.isLogin, validateObjectIds(['groupId']), userController.getGroupAiTopics);
+user_route.get('/ai-health', auth.isLogin, userController.getAiHealth);
 
 user_route.get('/search', auth.isLogin, searchLimiter, userController.search);
 user_route.get('/audit-logs', auth.isLogin, userController.getAuditLogs);

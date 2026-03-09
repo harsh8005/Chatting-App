@@ -18,8 +18,11 @@
                             <li class="list-group-item cursor-pointer user-list" data-id="<%= users[i]._id %>">
                                 <div class="d-flex align-items-center justify-content-between">
                                     <div class="d-flex align-items-center">
-                                        <img src="/<%= users[i].image %>" alt="" class="avatar-40 mr-2">
+                                        <img src="/<%= users[i].image %>" alt="" class="avatar-40 mr-2" onerror="this.onerror=null;this.src='/images/1720171439274-ayush.png';">
                                         <span class="text-dark"><%= users[i].name %></span>
+                                        <% if(users[i].email === 'aibot@chatapp.local'){ %>
+                                            <span class="badge badge-info ml-2">AI</span>
+                                        <% } %>
                                     </div>
                                     <% if(users[i].is_online == 1){ %>
                                         <sup class="online-status" id="<%= users[i]._id %>-status">Online</sup>

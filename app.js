@@ -10,15 +10,27 @@ const User = require('./models/userModel');
 const Chat = require('./models/chatModel');
 const Group = require('./models/groupModel');
 const GroupChat = require('./models/groupChatModel');
+const realtimeBridge = require('./services/realtime/bridge');
 
 mongoose.connect('mongodb://127.0.0.1:27017/dynamic-chat-app');
 
 const app = express();
 const server = http.Server(app);
+
+app.use((req, res, next) => {
+    const startedAt = Date.now();
+    res.on('finish', () => {
+        const duration = Date.now() - startedAt;
+        console.log(`[HTTP] ${req.method} ${req.originalUrl} ${res.statusCode} ${duration}ms`);
+    });
+    next();
+});
+
 app.use('/', userRoute);
 
 const io = socketIo(server);
 const usp = io.of('/user-namespace');
+realtimeBridge.setNamespace(usp);
 
 const getIdString = (value) => String(value && value._id ? value._id : value);
 const normalizeMembers = (group) => {

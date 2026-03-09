@@ -18,6 +18,15 @@
             .replace(/'/g, '&#039;');
     }
 
+    function idOf(value) {
+        if (!value) return '';
+        if (typeof value === 'object') {
+            if (value._id) return String(value._id);
+            if (value.$oid) return String(value.$oid);
+        }
+        return String(value);
+    }
+
     function formatMessageTime(dateValue) {
         const date = dateValue ? new Date(dateValue) : new Date();
         if (Number.isNaN(date.getTime())) return '';
@@ -87,7 +96,7 @@
         });
 
         socket.on('loadNewChat', function (chat) {
-            if (String(chat.receiver_id) !== String(currentUserId) || String(chat.sender_id) !== String(receiverId)) return;
+            if (idOf(chat.receiver_id) !== idOf(currentUserId) || idOf(chat.sender_id) !== idOf(receiverId)) return;
             const timeLabel = formatMessageTime(chat.createdAt);
             $('#chat-container').append(
                 '<div class="distance-user-chat" id="' + chat._id + '"><h5><span>' + escapeHtml(chat.message) + '</span> <small class="message-time-inline">' + timeLabel + '</small></h5></div>'
@@ -99,7 +108,7 @@
             const chats = payload.chats || [];
             let html = '';
             chats.forEach(function (chat) {
-                const mine = String(chat.sender_id) === String(currentUserId);
+                const mine = idOf(chat.sender_id) === idOf(currentUserId);
                 const timeLabel = formatMessageTime(chat.createdAt);
                 html += '<div class="' + (mine ? 'current-user-chat' : 'distance-user-chat') + '" id="' + chat._id + '"><h5>';
                 html += '<span>' + escapeHtml(chat.message) + '</span> <small class="message-time-inline">' + timeLabel + '</small>';
@@ -165,6 +174,8 @@
         let currentReplyTo = null;
         let typingTimer = null;
         let typingSent = false;
+        let groupMembers = [];
+        let pendingGroupMessageId = null;
 
         function canManageMembers() {
             return currentGroupRole === 'owner' || currentGroupRole === 'admin';
@@ -176,6 +187,9 @@
 
         function renderAttachment(chat) {
             if (!chat.file_url) return '';
+            if (chat.pending && chat.file_name && !chat.file_url) {
+                return '<div class="chat-attachment mt-1"><small>Uploading: ' + escapeHtml(chat.file_name) + '...</small></div>';
+            }
             const url = '/' + chat.file_url;
             if (chat.message_type === 'image') {
                 return '<div class="chat-attachment mt-1"><img src="' + escapeHtml(url) + '" class="chat-image" alt="attachment"></div>';
@@ -222,6 +236,20 @@
             return '<div class="read-receipt">Seen by ' + count + '</div>';
         }
 
+        function renderAiMetadata(chat) {
+            let html = '';
+            if (chat.transcript) {
+                html += '<div class="ai-metadata"><b>Transcript:</b> ' + escapeHtml(chat.transcript) + '</div>';
+            }
+            if (chat.sentiment) {
+                html += '<div class="ai-metadata"><b>Sentiment:</b> ' + escapeHtml(chat.sentiment) + '</div>';
+            }
+            if (chat.ai_generated) {
+                html += '<div class="ai-metadata"><b>AI Bot Reply</b></div>';
+            }
+            return html;
+        }
+
         function renderMessage(chat) {
             const senderId = chat.sender_id && chat.sender_id._id ? chat.sender_id._id : chat.sender_id;
             const senderName = chat.sender_id && chat.sender_id.name ? chat.sender_id.name : 'User';
@@ -258,10 +286,12 @@
                 renderReply(chat) +
                 (chat.message ? '<div class="message-body">' + escapeHtml(chat.message) + '</div>' : '') +
                 renderAttachment(chat) +
+                renderAiMetadata(chat) +
                 renderReactions(chat) +
                 '<div class="message-actions">' +
                 actions +
                 '</div>' +
+                (chat.pending ? '<div class="read-receipt">Sending...</div>' : '') +
                 renderReadReceipt(chat) +
                 '</div></div>'
             );
@@ -280,7 +310,7 @@
         }
 
         function markGroupRead() {
-            if (!currentGroupId) return;
+            if (!currentGroupId || !/^[a-f\d]{24}$/i.test(String(currentGroupId))) return;
             $.post('/mark-group-read', { group_id: currentGroupId });
         }
 
@@ -290,6 +320,7 @@
         }
 
         function renderMembers(members) {
+            groupMembers = members || [];
             if (!members || !members.length) {
                 $('#group-members-list').html('<small class="text-muted">No members</small>');
                 return;
@@ -340,7 +371,74 @@
             socket.emit('joinGroup', groupId);
             socket.emit('existsGroupChat', { group_id: groupId, user_id: currentUserId });
             loadMembers(groupId);
+            loadAiTopics(groupId);
+            $('#mention-suggestions').addClass('d-none').empty();
             markGroupRead();
+        }
+
+        function getMentionQuery(value) {
+            const match = value.match(/(?:^|\s)@([a-zA-Z0-9._-]*)$/);
+            return match ? match[1] : null;
+        }
+
+        function renderMentionSuggestions(query) {
+            const all = [{ _id: 'aibot', name: 'aibot' }].concat(
+                (groupMembers || []).map(function (m) {
+                    return { _id: m._id, name: m.name };
+                })
+            );
+            const uniq = [];
+            const seen = new Set();
+            all.forEach(function (x) {
+                const key = String(x.name || '').toLowerCase();
+                if (!key || seen.has(key)) return;
+                seen.add(key);
+                uniq.push(x);
+            });
+
+            const filtered = uniq.filter(function (x) {
+                return String(x.name).toLowerCase().includes(String(query || '').toLowerCase());
+            });
+
+            if (!filtered.length) {
+                $('#mention-suggestions').addClass('d-none').empty();
+                return;
+            }
+
+            $('#mention-suggestions')
+                .removeClass('d-none')
+                .html(
+                    filtered
+                        .slice(0, 8)
+                        .map(function (x) {
+                            return '<div class="mention-item" data-mention="' + escapeHtml(x.name) + '">@' + escapeHtml(x.name) + '</div>';
+                        })
+                        .join('')
+                );
+        }
+
+        function applyMention(mention) {
+            const input = $('#group-message');
+            const value = input.val();
+            const updated = value.replace(/(?:^|\s)@[a-zA-Z0-9._-]*$/, function (match) {
+                const hasLeadingSpace = /^\s/.test(match);
+                return (hasLeadingSpace ? ' ' : '') + '@' + mention + ' ';
+            });
+            input.val(updated);
+            $('#mention-suggestions').addClass('d-none').empty();
+            input.focus();
+        }
+
+        function loadAiTopics(groupId) {
+            $.get('/group-ai-topics/' + groupId, function (res) {
+                if (!res.success) return;
+                const tags = (res.data && res.data.tags) || [];
+                $('#ai-topics').html(
+                    tags.length
+                        ? tags.map(function (tag) { return '<span class="ai-topic-chip">#' + escapeHtml(tag) + '</span>'; }).join('')
+                        : '<small class="text-muted">No AI topics yet.</small>'
+                );
+            });
         }
 
         $(document).on('click', '.group-list-item', function () {
@@ -405,6 +503,37 @@
             if (!currentGroupId) return alert('Select group first');
 
             const formData = new FormData(this);
+            const textValue = String(formData.get('message') || '').trim();
+            const attachment = formData.get('attachment');
+            const hasAttachment = attachment && attachment.name;
+            if (!textValue && !hasAttachment) {
+                return alert('Type a message or attach a file before sending.');
+            }
+
+            pendingGroupMessageId = 'temp-' + Date.now();
+            appendMessage({
+                _id: pendingGroupMessageId,
+                sender_id: { _id: currentUserId, name: currentUser.name || 'You' },
+                message: textValue,
+                message_type: hasAttachment
+                    ? attachment.type && attachment.type.startsWith('image/')
+                        ? 'image'
+                        : attachment.type && attachment.type.startsWith('audio/')
+                            ? 'audio'
+                            : 'file'
+                    : 'text',
+                file_name: hasAttachment ? attachment.name : '',
+                createdAt: new Date().toISOString(),
+                read_by: [currentUserId],
+                pending: true
+            });
+
+            $('#group-message').val('');
+            $('#group-attachment').val('');
+            $('#reply-to-id').val('');
+            $('#reply-preview').addClass('d-none');
+            currentReplyTo = null;
+
             $.ajax({
                 url: '/save-group-chat',
                 type: 'POST',
@@ -413,22 +542,41 @@
                 contentType: false,
                 success: function (res) {
                     if (!res.success) return alert(res.msg || 'Send failed');
+                    if (pendingGroupMessageId) {
+                        $('#group-chat-' + pendingGroupMessageId).remove();
+                        pendingGroupMessageId = null;
+                    }
                     appendMessage(res.data);
                     socket.emit('newGroupChat', res.data);
-                    $('#group-message').val('');
-                    $('#group-attachment').val('');
-                    $('#reply-to-id').val('');
-                    $('#reply-preview').addClass('d-none');
-                    currentReplyTo = null;
+                    if (res.ai_tags && res.ai_tags.length) {
+                        $('#ai-topics').html(res.ai_tags.map(function (tag) {
+                            return '<span class="ai-topic-chip">#' + escapeHtml(tag) + '</span>';
+                        }).join(''));
+                    }
                 },
                 error: function (xhr) {
+                    if (pendingGroupMessageId) {
+                        $('#group-chat-' + pendingGroupMessageId).remove();
+                        pendingGroupMessageId = null;
+                    }
                     alert(xhr.responseJSON && xhr.responseJSON.msg ? xhr.responseJSON.msg : 'Send failed');
                 }
             });
         });
 
+        $('#group-message').on('keydown', function (event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                $('#group-chat-form').trigger('submit');
+            }
+        });
+
         $('#group-message').on('input', function () {
             if (!currentGroupId) return;
+            const mentionQuery = getMentionQuery($(this).val());
+            if (mentionQuery !== null) renderMentionSuggestions(mentionQuery);
+            else $('#mention-suggestions').addClass('d-none').empty();
+
             if (!typingSent) {
                 typingSent = true;
                 socket.emit('groupTyping', {
@@ -449,6 +597,16 @@
                     is_typing: false
                 });
             }, 900);
+        });
+
+        $(document).on('click', '.mention-item', function () {
+            applyMention($(this).attr('data-mention'));
+        });
+
+        $('#group-message').on('blur', function () {
+            setTimeout(function () {
+                $('#mention-suggestions').addClass('d-none').empty();
+            }, 120);
         });
 
         $(document).on('click', '.reply-btn', function () {
@@ -546,6 +704,27 @@
                         .join('') || '<small class="text-muted">No messages</small>'
                 );
             });
+        });
+
+        $('#ai-summary-btn').on('click', function () {
+            if (!currentGroupId) return;
+            $.get('/group-ai-summary/' + currentGroupId, function (res) {
+                if (!res.success) return alert(res.msg || 'Could not generate summary.');
+                $('#ai-output').removeClass('d-none').text((res.data && res.data.summary) || 'No summary generated.');
+            });
+        });
+
+        $('#ai-recap-btn').on('click', function () {
+            if (!currentGroupId) return;
+            $.get('/group-ai-recap/' + currentGroupId, function (res) {
+                if (!res.success) return alert(res.msg || 'Could not generate recap.');
+                $('#ai-output').removeClass('d-none').text((res.data && res.data.recap) || 'No recap generated.');
+            });
+        });
+
+        $('#ai-topics-btn').on('click', function () {
+            if (!currentGroupId) return;
+            loadAiTopics(currentGroupId);
         });
 
         $(document).on('click', '.search-group-open', function () {

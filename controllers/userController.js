@@ -8,6 +8,17 @@ const AuditLog = require('../models/auditLogModel');
 const { createToken, verifyToken, randomToken, sha256 } = require('../utils/jwt');
 const { sanitizeText, validateEmail, requireFields, isValidObjectId } = require('../utils/validators');
 const { logAudit } = require('../utils/auditLogger');
+const realtimeBridge = require('../services/realtime/bridge');
+const {
+    moderateText,
+    summarizeMessages,
+    extractTopics,
+    transcribeAudioAndSentiment,
+    ensureAIBotUser,
+    buildBotReply,
+    toContextMessages,
+    getAiHealthReport
+} = require('../services/ai/aiFeatures');
 
 const MEMBER_ROLES = ['owner', 'admin', 'member'];
 const ACCESS_TOKEN_SECRET = process.env.ACCESS_TOKEN_SECRET || 'access-secret-change-me';
@@ -253,7 +264,15 @@ const refreshAccessToken = async (req, res) => {
 const loadDashboard = async (req, res) => {
     try {
         const users = await User.find({ _id: { $nin: [req.session.user._id] } });
-        res.render('dashboard', { user: req.session.user, users: users });
+        const normalizedUsers = users.map((item) => {
+            const user = item.toObject ? item.toObject() : item;
+            const image = String(user.image || '').toLowerCase();
+            if (user.email === 'aibot@chatapp.local' && (!image || image.endsWith('/aibot.png') || image.endsWith('aibot.png'))) {
+                user.image = 'images/1720171439274-ayush.png';
+            }
+            return user;
+        });
+        res.render('dashboard', { user: req.session.user, users: normalizedUsers });
     } catch (error) {
         console.log(error.message);
     }
@@ -311,6 +330,54 @@ const saveChat = async (req, res) => {
 
         const newChat = await chat.save();
         res.status(200).send({ success: true, msg: 'Chat inserted!', data: newChat });
+
+        // Async bot reply for direct chat if user messages AI Bot.
+        setImmediate(async () => {
+            try {
+                const botUser = await ensureAIBotUser();
+                if (String(req.body.receiver_id) !== String(botUser._id)) return;
+
+                const context = await Chat.find({
+                    $or: [
+                        { sender_id: req.session.user._id, receiver_id: botUser._id },
+                        { sender_id: botUser._id, receiver_id: req.session.user._id }
+                    ]
+                })
+                    .sort({ createdAt: -1 })
+                    .limit(30)
+                    .populate('sender_id', 'name');
+
+                const reply = await buildBotReply({
+                    groupName: 'Direct Chat',
+                    message,
+                    contextMessages: context
+                        .reverse()
+                        .map((x) => ({
+                            sender_name: x.sender_id && x.sender_id.name ? x.sender_id.name : 'User',
+                            message: x.message || ''
+                        }))
+                });
+
+                const botChat = await Chat.create({
+                    sender_id: botUser._id,
+                    receiver_id: req.session.user._id,
+                    message: sanitizeText(reply, 4000) || 'AI Bot: I received your message.'
+                });
+
+                await logAudit({
+                    actorId: botUser._id,
+                    action: 'DIRECT_AI_BOT_REPLY',
+                    entityType: 'Chat',
+                    entityId: botChat._id,
+                    metadata: { receiver_id: req.session.user._id }
+                });
+
+                const botChatPayload = await Chat.findById(botChat._id);
+                realtimeBridge.emitDirect('loadNewChat', botChatPayload || botChat);
+            } catch (error) {
+                console.error('[AI] direct bot reply failed:', error.message);
+            }
+        });
     } catch (error) {
         res.status(400).send({ success: false, msg: error.message });
     }
@@ -382,7 +449,8 @@ const loadGroups = async (req, res) => {
                     image: group.image,
                     limit: group.limit,
                     member_count: members.length,
-                    role
+                    role,
+                    ai_tags: group.ai_tags || []
                 };
             })
             .filter(Boolean)
@@ -670,8 +738,11 @@ const saveGroupChat = async (req, res) => {
             return res.status(400).send({ success: false, msg: 'Message or attachment is required.' });
         }
 
+        let moderation = {};
+
         let messageType = 'text';
         let filePayload = {};
+        let transcriptPayload = {};
         if (req.file) {
             if (req.file.mimetype.startsWith('image/')) messageType = 'image';
             else if (req.file.mimetype.startsWith('audio/')) messageType = 'audio';
@@ -683,6 +754,7 @@ const saveGroupChat = async (req, res) => {
                 file_mime: req.file.mimetype,
                 file_size: req.file.size
             };
+
         }
 
         let replyMessage = null;
@@ -700,6 +772,10 @@ const saveGroupChat = async (req, res) => {
             message_type: messageType,
             reply_to: replyTo,
             read_by: [req.session.user._id],
+            moderation,
+            transcript: transcriptPayload.transcript || '',
+            sentiment: transcriptPayload.sentiment || '',
+            sentiment_score: transcriptPayload.sentiment_score || 0,
             ...filePayload
         });
 
@@ -717,7 +793,99 @@ const saveGroupChat = async (req, res) => {
             .populate('reply_to', 'message sender_id')
             .populate('reactions.user_id', 'name');
 
-        res.status(200).send({ success: true, data: populated });
+        res.status(200).send({ success: true, data: populated, ai_tags: group.ai_tags || [] });
+
+        // Run AI tasks async to avoid message send latency.
+        setImmediate(async () => {
+            try {
+                if (message) {
+                    const moderationResult = await moderateText(message);
+                    if (moderationResult && Object.keys(moderationResult).length) {
+                        await GroupChat.updateOne(
+                            { _id: saved._id },
+                            { $set: { moderation: moderationResult } }
+                        );
+                    }
+                }
+
+                if (messageType === 'audio' && req.file && req.file.path) {
+                    const transcriptResult = await transcribeAudioAndSentiment({
+                        filePath: req.file.path,
+                        mimeType: req.file.mimetype
+                    });
+                    await GroupChat.updateOne(
+                        { _id: saved._id },
+                        {
+                            $set: {
+                                transcript: transcriptResult.transcript || '',
+                                sentiment: transcriptResult.sentiment || '',
+                                sentiment_score: transcriptResult.sentiment_score || 0
+                            }
+                        }
+                    );
+                }
+
+                const botTrigger = /(^|\s)@aibot\b/i.test(message) || /^\/ask\b/i.test(message);
+                if (botTrigger) {
+                    const context = await toContextMessages(group._id);
+                    const prompt = message.replace(/@aibot/gi, '').replace(/^\/ask/i, '').trim() || message;
+                    let reply = await buildBotReply({
+                        groupName: group.name,
+                        message: prompt,
+                        contextMessages: context
+                    });
+                    reply = sanitizeText(reply, 4000);
+                    if (!reply) {
+                        reply = `AI Bot (fallback): I received your message in ${group.name}.`;
+                    }
+
+                    const botUser = await ensureAIBotUser();
+                    const botChat = await GroupChat.create({
+                        group_id: group._id,
+                        sender_id: botUser._id,
+                        message: reply,
+                        message_type: 'text',
+                        read_by: [],
+                        ai_generated: true
+                    });
+
+                    await logAudit({
+                        actorId: botUser._id,
+                        action: 'GROUP_AI_BOT_REPLY',
+                        entityType: 'GroupChat',
+                        entityId: botChat._id,
+                        groupId: group._id,
+                        metadata: {}
+                    });
+
+                    const botMessage = await GroupChat.findById(botChat._id)
+                        .populate('sender_id', 'name image')
+                        .populate('reply_to', 'message sender_id')
+                        .populate('reactions.user_id', 'name');
+
+                    realtimeBridge.emitGroup(String(group._id), 'loadNewGroupChat', botMessage);
+                }
+
+                const recent = await GroupChat.find({ group_id: group._id, message: { $ne: '' } })
+                    .sort({ createdAt: -1 })
+                    .limit(60)
+                    .populate('sender_id', 'name');
+
+                if (recent.length >= 5) {
+                    const tags = await extractTopics(
+                        recent.map((x) => ({
+                            sender_name: x.sender_id && x.sender_id.name ? x.sender_id.name : 'User',
+                            message: x.message
+                        }))
+                    );
+                    if (tags && tags.length) {
+                        await Group.updateOne({ _id: group._id }, { $set: { ai_tags: tags } });
+                    }
+                }
+            } catch (error) {
+                console.error('[AI] async group tasks failed:', error.message);
+            }
+        });
     } catch (error) {
         res.status(400).send({ success: false, msg: error.message });
     }
@@ -882,6 +1050,10 @@ const reactGroupChat = async (req, res) => {
 
 const markGroupRead = async (req, res) => {
     try {
+        if (!isValidObjectId(req.body.group_id)) {
+            return res.status(200).send({ success: true, ignored: true });
+        }
+
         const group = await Group.findById(req.body.group_id);
         if (!group || !isGroupMember(group, req.session.user._id)) {
             return res.status(403).send({ success: false, msg: 'Not allowed.' });
@@ -963,6 +1135,110 @@ const search = async (req, res) => {
     }
 };
 
+const getGroupAiSummary = async (req, res) => {
+    try {
+        const group = await Group.findById(req.params.groupId);
+        if (!group || !isGroupMember(group, req.session.user._id)) {
+            return res.status(403).send({ success: false, msg: 'Not allowed.' });
+        }
+
+        const limit = Math.min(Math.max(Number(req.query.limit || 80), 10), 200);
+        const chats = await GroupChat.find({ group_id: group._id, message: { $ne: '' } })
+            .sort({ createdAt: -1 })
+            .limit(limit)
+            .populate('sender_id', 'name');
+
+        const summary = await summarizeMessages(
+            chats.reverse().map((x) => ({
+                sender_name: x.sender_id && x.sender_id.name ? x.sender_id.name : 'User',
+                message: x.message
+            })),
+            'chat summary'
+        );
+
+        return res.status(200).send({ success: true, data: { summary } });
+    } catch (error) {
+        return res.status(400).send({ success: false, msg: error.message });
+    }
+};
+
+const getGroupAiRecap = async (req, res) => {
+    try {
+        const group = await Group.findById(req.params.groupId);
+        if (!group || !isGroupMember(group, req.session.user._id)) {
+            return res.status(403).send({ success: false, msg: 'Not allowed.' });
+        }
+
+        const sinceHours = Math.min(Math.max(Number(req.query.hours || 24), 1), 168);
+        const since = new Date(Date.now() - sinceHours * 60 * 60 * 1000);
+        const chats = await GroupChat.find({
+            group_id: group._id,
+            createdAt: { $gte: since },
+            message: { $ne: '' }
+        })
+            .sort({ createdAt: 1 })
+            .populate('sender_id', 'name');
+
+        const recap = await summarizeMessages(
+            chats.map((x) => ({
+                sender_name: x.sender_id && x.sender_id.name ? x.sender_id.name : 'User',
+                message: x.message
+            })),
+            'meeting recap'
+        );
+
+        group.ai_last_recap = recap;
+        await group.save();
+
+        return res.status(200).send({ success: true, data: { recap } });
+    } catch (error) {
+        return res.status(400).send({ success: false, msg: error.message });
+    }
+};
+
+const getGroupAiTopics = async (req, res) => {
+    try {
+        const group = await Group.findById(req.params.groupId);
+        if (!group || !isGroupMember(group, req.session.user._id)) {
+            return res.status(403).send({ success: false, msg: 'Not allowed.' });
+        }
+
+        if (!group.ai_tags || !group.ai_tags.length) {
+            const chats = await GroupChat.find({ group_id: group._id, message: { $ne: '' } })
+                .sort({ createdAt: -1 })
+                .limit(80)
+                .populate('sender_id', 'name');
+            const tags = await extractTopics(
+                chats.reverse().map((x) => ({
+                    sender_name: x.sender_id && x.sender_id.name ? x.sender_id.name : 'User',
+                    message: x.message
+                }))
+            );
+            group.ai_tags = tags;
+            await group.save();
+        }
+
+        return res.status(200).send({
+            success: true,
+            data: {
+                tags: group.ai_tags || [],
+                last_recap: group.ai_last_recap || ''
+            }
+        });
+    } catch (error) {
+        return res.status(400).send({ success: false, msg: error.message });
+    }
+};
+
+const getAiHealth = async (req, res) => {
+    try {
+        const report = await getAiHealthReport();
+        return res.status(200).send({ success: true, data: report });
+    } catch (error) {
+        return res.status(400).send({ success: false, msg: error.message });
+    }
+};
+
 const getAuditLogs = async (req, res) => {
     try {
         const page = Math.max(Number(req.query.page || 1), 1);
@@ -1033,5 +1309,9 @@ module.exports = {
     reactGroupChat,
     markGroupRead,
     search,
+    getAiHealth,
+    getGroupAiSummary,
+    getGroupAiRecap,
+    getGroupAiTopics,
     getAuditLogs
 };

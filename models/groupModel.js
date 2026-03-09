@@ -23,6 +23,14 @@ const groupSchema = new mongoose.Schema({
     members:{
         type:[mongoose.Schema.Types.Mixed],
         default:[]
+    },
+    ai_tags: {
+        type: [String],
+        default: []
+    },
+    ai_last_recap: {
+        type: String,
+        default: ''
     }
 
 },

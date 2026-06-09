@@ -1,0 +1,237 @@
+<%- include('layouts/header.ejs') %>
+
+<div class="app-shell">
+    <div class="app-topbar">
+        <div>
+            <h2 class="page-title mb-1">Group Chat v2</h2>
+            <p class="page-subtitle mb-0">Roles, threads, reactions, media, search, read receipts.</p>
+        </div>
+        <button type="button" class="btn btn-primary btn-pill" data-toggle="modal" data-target="#createGroupModal">
+            <i class="fa fa-plus mr-1"></i> New Group
+        </button>
+    </div>
+
+    <div class="row mt-3">
+        <div class="col-lg-4 mb-3">
+            <div class="glass-card p-3 h-100">
+                <form id="global-search-form" class="mb-3">
+                    <div class="input-group">
+                        <input type="text" id="global-search-query" class="form-control" placeholder="Search messages, groups, users..." required>
+                        <div class="input-group-append">
+                            <button class="btn btn-primary" type="submit"><i class="fa fa-search"></i></button>
+                        </div>
+                    </div>
+                </form>
+
+                <h6 class="section-head">Groups</h6>
+                <ul class="list-group modern-list" id="group-list">
+                    <% if(groups.length > 0){ %>
+                        <% for(let i = 0; i < groups.length; i++){ %>
+                            <li class="list-group-item group-list-item cursor-pointer"
+                                data-id="<%= groups[i]._id %>"
+                                data-name="<%= groups[i].name %>"
+                                data-role="<%= groups[i].role %>">
+                                <div class="d-flex align-items-center justify-content-between">
+                                    <div class="d-flex align-items-center">
+                                        <% if(groups[i].image){ %>
+                                            <img src="/<%= groups[i].image %>" alt="<%= groups[i].name %>" class="avatar-40 mr-2">
+                                        <% } else { %>
+                                            <div class="avatar-fallback mr-2"><%= groups[i].name[0].toUpperCase() %></div>
+                                        <% } %>
+                                        <div>
+                                            <div class="font-weight-bold text-dark"><%= groups[i].name %></div>
+                                            <small class="text-muted"><%= groups[i].member_count %>/<%= groups[i].limit %> members</small>
+                                        </div>
+                                    </div>
+                                    <span class="badge badge-role"><%= groups[i].role %></span>
+                                </div>
+                            </li>
+                        <% } %>
+                    <% } else { %>
+                        <li class="list-group-item text-muted">No groups yet.</li>
+                    <% } %>
+                </ul>
+
+                <div id="search-results" class="mt-3 d-none">
+                    <h6 class="section-head">Search Results</h6>
+                    <div class="search-block mb-2">
+                        <small class="text-muted d-block mb-1">Users</small>
+                        <div id="search-users"></div>
+                    </div>
+                    <div class="search-block mb-2">
+                        <small class="text-muted d-block mb-1">Groups</small>
+                        <div id="search-groups"></div>
+                    </div>
+                    <div class="search-block">
+                        <small class="text-muted d-block mb-1">Messages</small>
+                        <div id="search-messages"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-8 mb-3">
+            <div class="glass-card p-3 h-100">
+                <div id="group-empty-state" class="empty-state">
+                    <h4>Select a group</h4>
+                    <p>Pick a group from the left panel to start chatting.</p>
+                </div>
+
+                <div class="group-chat-section d-none">
+                    <div class="chat-head">
+                        <div class="d-flex align-items-center">
+                            <h4 id="active-group-name" class="mb-0 mr-2"></h4>
+                            <span class="badge badge-role" id="active-group-role"></span>
+                        </div>
+                        <div class="d-flex align-items-center">
+                            <span id="group-typing-indicator" class="typing-indicator mr-2"></span>
+                            <button type="button" class="btn btn-sm btn-outline-primary mr-2 d-none" id="open-add-member-modal" data-toggle="modal" data-target="#addMemberModal">
+                                Add Member
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="ai-toolbar mb-2">
+                        <button type="button" class="btn btn-sm btn-outline-info" id="ai-summary-btn">AI Summary</button>
+                        <button type="button" class="btn btn-sm btn-outline-info" id="ai-recap-btn">Meeting Recap</button>
+                        <button type="button" class="btn btn-sm btn-outline-info" id="ai-topics-btn">Refresh Topics</button>
+                        <span class="ml-2 small text-muted">Tip: mention <b>@aibot</b> in chat to get bot replies.</span>
+                    </div>
+                    <div id="ai-output" class="ai-output d-none"></div>
+                    <div id="ai-topics" class="ai-topics mb-2"></div>
+
+                    <div class="members-wrap mb-2">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <strong>Members</strong>
+                            <small class="text-muted">Use role controls if you are owner/admin.</small>
+                        </div>
+                        <div id="group-members-list" class="members-list"></div>
+                    </div>
+
+                    <div id="group-chat-container" class="chat-feed"></div>
+
+                    <div id="reply-preview" class="reply-preview d-none">
+                        <span id="reply-preview-text"></span>
+                        <button type="button" class="btn btn-link btn-sm p-0 ml-2" id="clear-reply">Cancel</button>
+                    </div>
+
+                    <form id="group-chat-form" class="chat-compose mt-2" enctype="multipart/form-data">
+                        <input type="hidden" id="selected-group-id" name="group_id">
+                        <input type="hidden" id="reply-to-id" name="reply_to">
+                        <textarea name="message" placeholder="Write a message..." id="group-message" class="form-control" rows="2"></textarea>
+                        <div id="mention-suggestions" class="mention-suggestions d-none"></div>
+                        <div class="d-flex align-items-center mt-2">
+                            <input type="file" name="attachment" id="group-attachment" class="form-control-file mr-2">
+                            <button type="submit" class="btn btn-primary btn-pill">Send</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="createGroupModal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Create Group</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span>&times;</span></button>
+            </div>
+            <form id="create-group-form" enctype="multipart/form-data">
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label>Group Name</label>
+                        <input type="text" class="form-control" name="name" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Group Image</label>
+                        <input type="file" class="form-control" name="image" accept="image/*">
+                    </div>
+                    <div class="form-group">
+                        <label>User Limit</label>
+                        <input type="number" class="form-control" name="limit" min="2" required>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-light" data-dismiss="modal">Close</button>
+                    <button type="submit" class="btn btn-primary">Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="addMemberModal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Add Member</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span>&times;</span></button>
+            </div>
+            <form id="add-group-member-form">
+                <div class="modal-body">
+                    <input type="hidden" name="group_id" id="add-member-group-id">
+                    <div class="form-group">
+                        <label>User</label>
+                        <select class="form-control" name="member_id" id="group-member-select" required>
+                            <option value="">Select user</option>
+                            <% for(let i = 0; i < users.length; i++){ %>
+                                <option value="<%= users[i]._id %>"><%= users[i].name %> (<%= users[i].email %>)</option>
+                            <% } %>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-light" data-dismiss="modal">Close</button>
+                    <button type="submit" class="btn btn-primary">Add</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="deleteGroupChatModal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Delete Message</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span>&times;</span></button>
+            </div>
+            <form id="delete-group-chat-form">
+                <div class="modal-body">
+                    <input type="hidden" id="delete-group-message-id">
+                    <p>Do you want to delete this message?</p>
+                    <p><b id="delete-group-message"></b></p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-light" data-dismiss="modal">Close</button>
+                    <button type="submit" class="btn btn-danger">Delete</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="editGroupChatModal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Edit Message</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span>&times;</span></button>
+            </div>
+            <form id="update-group-chat-form">
+                <div class="modal-body">
+                    <input type="hidden" id="edit-group-message-id">
+                    <input type="text" id="update-group-message" class="form-control" required>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-light" data-dismiss="modal">Close</button>
+                    <button type="submit" class="btn btn-primary">Update</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<%- include('layouts/footer.ejs') %>
